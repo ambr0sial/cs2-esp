@@ -379,6 +379,15 @@ class ESP:
                 continue
                 
     def _draw_esp_features(self, entity, box_x, box_y, box_width, box_height, main_color, distance, name, is_enemy):
+        if Config.enemy_skeleton:
+            pm.draw_circle_lines(
+                centerX=entity.head_pos_2d["x"],
+                centerY=entity.head_pos_2d["y"],
+                radius=box_width / 4,
+                color=pm.fade_color(main_color, 0.7)
+            )
+            self._draw_skeleton(entity, main_color)
+
         if Config.enemy_box:
             pm.draw_rectangle_rounded_lines(
                 posX=box_x,
@@ -450,9 +459,6 @@ class ESP:
                 color=Config.enemy_health_color
             )
             
-        if Config.enemy_skeleton:
-            self._draw_skeleton(entity, main_color)
-
     def _draw_skeleton(self, entity, main_color):
         skeleton_points = [
             (entity.neck["x"], entity.neck["y"], entity.right_shoulder["x"], entity.right_shoulder["y"]),
