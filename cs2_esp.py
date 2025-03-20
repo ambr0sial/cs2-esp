@@ -107,55 +107,97 @@ class Entity:
         self.entity_controller = entity_controller
         self.entity_pawn = entity_pawn
         self.process = process
+        self.cached_values = {}
+        self.pos_2d = None
+        self.head_pos_2d = None
+        self.bone_positions = {}
 
     def health(self):
-        return pm.r_int(self.process, self.entity_pawn + m_iHealth)
+        if "health" not in self.cached_values:
+            self.cached_values["health"] = pm.r_int(self.process, self.entity_pawn + m_iHealth)
+        return self.cached_values["health"]
     
     def armor(self):
-        return pm.r_int(self.process, self.entity_pawn + m_ArmorValue)
+        if "armor" not in self.cached_values:
+            self.cached_values["armor"] = pm.r_int(self.process, self.entity_pawn + m_ArmorValue)
+        return self.cached_values["armor"]
 
     def team(self):
-        return pm.r_int(self.process, self.entity_pawn + m_iTeamNum)
+        if "team" not in self.cached_values:
+            self.cached_values["team"] = pm.r_int(self.process, self.entity_pawn + m_iTeamNum)
+        return self.cached_values["team"]
 
     def name(self):
-        return pm.r_string(self.process, self.entity_controller + m_iszPlayerName)
+        if "name" not in self.cached_values:
+            self.cached_values["name"] = pm.r_string(self.process, self.entity_controller + m_iszPlayerName)
+        return self.cached_values["name"]
     
     def weapon(self):
+        if "weapon" in self.cached_values:
+            return self.cached_values["weapon"]
+            
         current = pm.r_int64(self.process, self.entity_pawn + m_pClippingWeapon)
         if current == 0:
+            self.cached_values["weapon"] = ""
             return ""
         
         try:
             index = pm.r_int16(self.process, current + m_AttributeManager + m_Item + m_iItemDefinitionIndex)
             weapon_name = get_weapon_name(index)
+            self.cached_values["weapon"] = weapon_name
             return weapon_name
         except Exception:
+            self.cached_values["weapon"] = ""
             return ""
 
     def pos(self):
-        return pm.r_vec3(self.process, self.entity_pawn + m_vOldOrigin)
+        if "pos" not in self.cached_values:
+            self.cached_values["pos"] = pm.r_vec3(self.process, self.entity_pawn + m_vOldOrigin)
+        return self.cached_values["pos"]
     
     def bone_pos(self, index):
-        scene = pm.r_int64(self.process, self.entity_pawn + m_pGameSceneNode)
-        bone = pm.r_int64(self.process, scene + m_pBoneArray)
-        return pm.r_vec3(self.process, bone + index * 32)
+        if index in self.bone_positions:
+            return self.bone_positions[index]
+            
+        if "scene" not in self.cached_values:
+            self.cached_values["scene"] = pm.r_int64(self.process, self.entity_pawn + m_pGameSceneNode)
+            
+        if "bone_array" not in self.cached_values:
+            self.cached_values["bone_array"] = pm.r_int64(self.process, self.cached_values["scene"] + m_pBoneArray)
+            
+        bone_position = pm.r_vec3(self.process, self.cached_values["bone_array"] + index * 32)
+        self.bone_positions[index] = bone_position
+        return bone_position
 
     def world_to_screen(self, view_matrix):
         try:
-            self.pos_2d = pm.world_to_screen(view_matrix, self.pos(), 1)
-            self.head_pos_2d = pm.world_to_screen(view_matrix, self.bone_pos(6), 1)
-            self.neck = pm.world_to_screen(view_matrix, self.bone_pos(5), 1)
-            self.left_feet = pm.world_to_screen(view_matrix, self.bone_pos(27), 1)
-            self.right_feet = pm.world_to_screen(view_matrix, self.bone_pos(24), 1)
-            self.waist = pm.world_to_screen(view_matrix, self.bone_pos(0), 1)
-            self.left_knees = pm.world_to_screen(view_matrix, self.bone_pos(26), 1)
-            self.right_knees = pm.world_to_screen(view_matrix, self.bone_pos(23), 1)
-            self.left_hand = pm.world_to_screen(view_matrix, self.bone_pos(16), 1)
-            self.right_hand = pm.world_to_screen(view_matrix, self.bone_pos(11), 1)
-            self.left_arm = pm.world_to_screen(view_matrix, self.bone_pos(14), 1)
-            self.right_arm = pm.world_to_screen(view_matrix, self.bone_pos(9), 1)
-            self.left_shoulder = pm.world_to_screen(view_matrix, self.bone_pos(13), 1)
-            self.right_shoulder = pm.world_to_screen(view_matrix, self.bone_pos(8), 1)
+            self.cached_values = {}
+            self.bone_positions = {}
+            
+            pos_3d = self.pos()
+            self.pos_2d = pm.world_to_screen(view_matrix, pos_3d, 1)
+            
+            head_3d = self.bone_pos(6)
+            self.head_pos_2d = pm.world_to_screen(view_matrix, head_3d, 1)
+            
+            bones = {
+                "neck": self.bone_pos(5),
+                "left_feet": self.bone_pos(27),
+                "right_feet": self.bone_pos(24),
+                "waist": self.bone_pos(0),
+                "left_knees": self.bone_pos(26),
+                "right_knees": self.bone_pos(23),
+                "left_hand": self.bone_pos(16),
+                "right_hand": self.bone_pos(11),
+                "left_arm": self.bone_pos(14),
+                "right_arm": self.bone_pos(9),
+                "left_shoulder": self.bone_pos(13),
+                "right_shoulder": self.bone_pos(8)
+            }
+            
+            for key, pos in bones.items():
+                setattr(self, key, pm.world_to_screen(view_matrix, pos, 1))
+                
             return True
         except Exception:
             return False
@@ -164,23 +206,45 @@ class Entities:
     def __init__(self, process, module):
         self.process = process
         self.module = module
+        self.entity_cache = {}
+        self.last_fetch_time = 0
+        self.cache_duration = 0.01
 
     def get_all_entities(self):
+        current_time = time.time()
+        
+        if current_time - self.last_fetch_time < self.cache_duration and self.entity_cache:
+            return self.entity_cache
+            
         entities = []
         local_player_controller = pm.r_int64(self.process, self.module + dwLocalPlayerController)
+        
+        entity_list = pm.r_int64(self.process, self.module + dwEntityList)
+        if not entity_list:
+            return []
 
         for entity in range(1, 65):
             try:
-                entity_list = pm.r_int64(self.process, self.module + dwEntityList)
-                entity_entry = pm.r_int64(self.process, entity_list + (8 * (entity & 0x7FFF) >> 9) + 16)
-                entity_controller = pm.r_int64(self.process, entity_entry + 120 * (entity & 0x1FF))
+                entity_entry_offset = (8 * (entity & 0x7FFF) >> 9) + 16
+                entity_entry = pm.r_int64(self.process, entity_list + entity_entry_offset)
+                if not entity_entry:
+                    continue
+                    
+                entity_controller_offset = 120 * (entity & 0x1FF)
+                entity_controller = pm.r_int64(self.process, entity_entry + entity_controller_offset)
 
                 if entity_controller == local_player_controller or entity_controller == 0:
                     continue
                 
                 entity_controller_pawn = pm.r_int64(self.process, entity_controller + m_hPlayerPawn)
-                entity_list_ptr = pm.r_int64(self.process, entity_list + 8 * ((entity_controller_pawn & 0x7FFF) >> 9) + 16)
-                entity_pawn = pm.r_int64(self.process, entity_list_ptr + 120 * (entity_controller_pawn & 0x1FF))
+                
+                pawn_list_offset = 8 * ((entity_controller_pawn & 0x7FFF) >> 9) + 16
+                entity_list_ptr = pm.r_int64(self.process, entity_list + pawn_list_offset)
+                if not entity_list_ptr:
+                    continue
+                    
+                pawn_offset = 120 * (entity_controller_pawn & 0x1FF)
+                entity_pawn = pm.r_int64(self.process, entity_list_ptr + pawn_offset)
                 
                 if entity_pawn == 0:
                     continue
@@ -189,6 +253,8 @@ class Entities:
             except Exception:
                 continue
 
+        self.entity_cache = entities
+        self.last_fetch_time = current_time
         return entities
 
 def clean_text(text):
@@ -312,6 +378,11 @@ class ESP:
             return
             
         try:
+            screen_width = pm.get_screen_width()
+            screen_height = pm.get_screen_height()
+            screen_center_x = screen_width / 2
+            screen_center_y = screen_height / 2
+            
             view_matrix = pm.r_floats(self.process, self.module + dwViewMatrix, 16)
             if not view_matrix:
                 return
@@ -330,14 +401,23 @@ class ESP:
             else:
                 local_player_pos = {"x": 0, "y": 0, "z": 0}
             
-            self._process_entities(view_matrix, local_player_team, local_player_pos)
+            entities = self.entities.get_all_entities()
+            if not entities:
+                return
+                
+            self._process_entities(view_matrix, local_player_team, local_player_pos, screen_center_x, screen_center_y)
                 
         except Exception:
             pass
             
-    def _process_entities(self, view_matrix, local_player_team, local_player_pos):
+    def _process_entities(self, view_matrix, local_player_team, local_player_pos, screen_center_x, screen_center_y):
         entities = self.entities.get_all_entities()
         
+        common_colors = {}
+        for color_name in ["enemy_color", "friend_color"]:
+            color = getattr(Config, color_name)
+            common_colors[color_name] = pm.fade_color(color, 0.7)
+            
         for entity in entities:
             try:
                 if not entity or not entity.entity_pawn or not entity.entity_controller:
@@ -349,13 +429,17 @@ class ESP:
                     
                 if not entity.world_to_screen(view_matrix):
                     continue
-                    
+                
+                is_enemy = entity.team() != local_player_team
+                
+                if not is_enemy and not Config.show_teammates:
+                    continue
+                
                 head_to_foot = entity.pos_2d["y"] - entity.head_pos_2d["y"]
                 box_width = head_to_foot / 2
                 box_height = head_to_foot * 1.2
                 box_x = entity.head_pos_2d["x"] - box_width / 2
                 box_y = entity.head_pos_2d["y"] - box_height * 0.05
-                corner_length = min(box_width, box_height) * 0.2
                 
                 if box_width <= 0 or box_height <= 0:
                     continue
@@ -363,28 +447,31 @@ class ESP:
                 name = clean_text(entity.name())
                 if not name:
                     continue
-                    
-                distance = int(calculate_distance(local_player_pos, entity.pos()) / 50)
-
-                is_enemy = entity.team() != local_player_team
                 
-                if not is_enemy and not Config.show_teammates:
-                    continue
+                distance = 0
+                if Config.enemy_distance:
+                    distance = int(calculate_distance(local_player_pos, entity.pos()) / 50)
                 
                 main_color = Config.enemy_color if is_enemy else Config.friend_color
                 
-                self._draw_esp_features(entity, box_x, box_y, box_width, box_height, main_color, distance, name, is_enemy)
+                self._draw_esp_features(
+                    entity, box_x, box_y, box_width, box_height, 
+                    main_color, distance, name, is_enemy,
+                    screen_center_x, screen_center_y
+                )
                 
             except Exception:
                 continue
                 
-    def _draw_esp_features(self, entity, box_x, box_y, box_width, box_height, main_color, distance, name, is_enemy):
+    def _draw_esp_features(self, entity, box_x, box_y, box_width, box_height, main_color, distance, name, is_enemy, screen_center_x, screen_center_y):
+        faded_color = pm.fade_color(main_color, 0.7)
+        
         if Config.enemy_skeleton:
             pm.draw_circle_lines(
                 centerX=entity.head_pos_2d["x"],
                 centerY=entity.head_pos_2d["y"],
                 radius=box_width / 4,
-                color=pm.fade_color(main_color, 0.7)
+                color=faded_color
             )
             self._draw_skeleton(entity, main_color)
 
@@ -396,17 +483,17 @@ class ESP:
                 height=box_height,
                 roundness=0.05,
                 segments=1,
-                color=pm.fade_color(main_color, 0.7),
+                color=faded_color,
                 lineThick=1.2
             )
 
         if Config.enemy_line:
             pm.draw_line(
-                startPosX=pm.get_screen_width() / 2,
-                startPosY=pm.get_screen_height() - 100,
+                startPosX=screen_center_x,
+                startPosY=screen_center_y + (pm.get_screen_height() / 2) - 100,
                 endPosX=entity.pos_2d["x"],
                 endPosY=entity.pos_2d["y"],
-                color=pm.fade_color(main_color, 0.7),
+                color=faded_color,
                 thick=0.5
             )
 
@@ -460,6 +547,8 @@ class ESP:
             )
             
     def _draw_skeleton(self, entity, main_color):
+        faded_color = pm.fade_color(main_color, 0.7)
+        
         skeleton_points = [
             (entity.neck["x"], entity.neck["y"], entity.right_shoulder["x"], entity.right_shoulder["y"]),
             (entity.neck["x"], entity.neck["y"], entity.left_shoulder["x"], entity.left_shoulder["y"]),
@@ -480,7 +569,7 @@ class ESP:
                 startPosY=bone[1], 
                 endPosX=bone[2], 
                 endPosY=bone[3], 
-                color=pm.fade_color(main_color, 0.7), 
+                color=faded_color, 
                 thick=1.0
             )
 
@@ -798,7 +887,7 @@ def draw_menu():
     )
     
     # update counter
-    update_text = "update: 0"
+    update_text = "update: 2"
     pm.draw_text(
         text=update_text,
         posX=Menu.x + Menu.width - 60,
@@ -1008,24 +1097,35 @@ class App:
     def run(self):
         print("running esp - press insert to toggle menu")
         
+        monitor_refresh = pm.get_monitor_refresh_rate()
+        pm.set_fps(monitor_refresh)
+        
+        last_error_time = 0
+        error_cooldown = 5
+        
         while pm.overlay_loop():
             try:
                 pm.begin_drawing()
                 
                 update_mouse()
                 
-                draw_watermark()
+                if Config.watermark:
+                    draw_watermark()
                 
                 self.esp.update()
                 
                 toggle_menu()
-                drag_menu()
-                draw_menu()
+                
+                if Menu.show:
+                    drag_menu()
+                    draw_menu()
                 
                 pm.end_drawing()
             except Exception as e:
-                print(f"error in main loop: {str(e)}")
-                continue
+                current_time = time.time()
+                if current_time - last_error_time > error_cooldown:
+                    print(f"error in main loop: {str(e)}")
+                    last_error_time = current_time
         
         print("exiting..")
 
